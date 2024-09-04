@@ -83,11 +83,16 @@ fn gemm_calc<T>(
 ) where
     T: Mul<Output = T> + Add<Output = T> + Copy + Zero + One + PartialEq,
 {
-    // Determine dimensions based on layout
+    // Determine matrix dimensions based on layout
     let (m, n, k) = match layout {
         Layout::RowMajor => (c.len() / ldc, b.len() / ldb, a.len() / lda),
-        Layout::ColumnMajor => (ldc, ldb, lda),
+        Layout::ColumnMajor => (c.len() / ldc, b.len() / ldb, a.len() / lda),
     };
+
+    // Check if calculated dimensions are valid for the given matrices
+    assert!(m * ldc <= c.len(), "Matrix C dimensions are out of bounds");
+    assert!(k * lda <= a.len(), "Matrix A dimensions are out of bounds");
+    assert!(n * ldb <= b.len(), "Matrix B dimensions are out of bounds");
 
     // Iterate through the matrix dimensions
     for i in 0..m {
@@ -106,7 +111,21 @@ fn gemm_calc<T>(
                     ),
                 };
 
-                // Dereference alpha, a, and b to use the values in operations
+                // Check that indices are within bounds before accessing
+                assert!(
+                    a_index < a.len(),
+                    "Index out of bounds for matrix A: {} >= {}",
+                    a_index,
+                    a.len()
+                );
+                assert!(
+                    b_index < b.len(),
+                    "Index out of bounds for matrix B: {} >= {}",
+                    b_index,
+                    b.len()
+                );
+
+                // Calculate the sum for this element
                 sum = sum + (*alpha) * a[a_index] * b[b_index];
             }
 
@@ -116,7 +135,15 @@ fn gemm_calc<T>(
                 Layout::ColumnMajor => j * ldc + i,
             };
 
-            // Update the result matrix `c`, dereferencing beta
+            // Check that the index is within bounds before updating
+            assert!(
+                c_index < c.len(),
+                "Index out of bounds for matrix C: {} >= {}",
+                c_index,
+                c.len()
+            );
+
+            // Update the result matrix `c`
             c[c_index] = (*beta) * c[c_index] + sum;
         }
     }
