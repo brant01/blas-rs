@@ -39,7 +39,8 @@ pub fn gemm<T>(
         + Zero
         + One
         + PartialEq
-        + Default,
+        + Default
+        + std::fmt::Debug,
 {
     if a.is_empty() || b.is_empty() || c.is_empty() {
         // Early return, we can do no work here.
@@ -81,70 +82,112 @@ fn gemm_calc<T>(
     c: &mut [T],
     ldc: usize,
 ) where
-    T: Mul<Output = T> + Add<Output = T> + Copy + Zero + One + PartialEq,
+    T: Mul<Output = T> 
+    + Add<Output = T> 
+    + Copy 
+    + Zero 
+    + One 
+    + PartialEq 
+    + std::fmt::Debug,
 {
-    // Determine matrix dimensions based on layout
-    let (m, n, k) = match layout {
-        Layout::RowMajor => (c.len() / ldc, b.len() / ldb, a.len() / lda),
-        Layout::ColumnMajor => (c.len() / ldc, b.len() / ldb, a.len() / lda),
-    };
+    match layout {
+        Layout::RowMajor => {
+            // Determine dimensions of matrices A, B, and C for row-major layout
+            let m = a.len() / lda;
+            let k_a = lda;
+            let k_b = b.len() / ldb;
+            let n = ldb;
+            let m_c = c.len() / ldc;
+            let n_c = ldc;
 
-    // Check if calculated dimensions are valid for the given matrices
-    assert!(m * ldc <= c.len(), "Matrix C dimensions are out of bounds");
-    assert!(k * lda <= a.len(), "Matrix A dimensions are out of bounds");
-    assert!(n * ldb <= b.len(), "Matrix B dimensions are out of bounds");
+            // Debug prints for dimensions
+            println!("m: {}, k_a: {}, k_b: {}, n: {}, m_c: {}, n_c: {}", m, k_a, k_b, n, m_c, n_c);
 
-    // Iterate through the matrix dimensions
-    for i in 0..m {
-        for j in 0..n {
-            let mut sum = T::zero();
-            for l in 0..k {
-                // Use match to handle indexing based on the layout
-                let (a_index, b_index) = match layout {
-                    Layout::RowMajor => (
-                        i * lda + l,       // Row-major indexing for `a`
-                        l * ldb + j,       // Row-major indexing for `b`
-                    ),
-                    Layout::ColumnMajor => (
-                        l * lda + i,       // Column-major indexing for `a`
-                        j * ldb + l,       // Column-major indexing for `b`
-                    ),
-                };
+            // Ensure dimensions match for matrix multiplication
+            assert!(k_a == k_b, "Inner dimensions of A and B must match.");
+            assert!(m == m_c, "Row dimensions of A and C must match.");
+            assert!(n == n_c, "Column dimensions of B and C must match.");
 
-                // Check that indices are within bounds before accessing
-                assert!(
-                    a_index < a.len(),
-                    "Index out of bounds for matrix A: {} >= {}",
-                    a_index,
-                    a.len()
-                );
-                assert!(
-                    b_index < b.len(),
-                    "Index out of bounds for matrix B: {} >= {}",
-                    b_index,
-                    b.len()
-                );
+            for i in 0..m {
+                for j in 0..n {
+                    let mut sum = T::zero();
+                    for l in 0..k_a {
+                        let a_index = i * lda + l; // Access A[i, l] in row-major
+                        let b_index = l * ldb + j; // Access B[l, j] in row-major
 
-                // Calculate the sum for this element
-                sum = sum + (*alpha) * a[a_index] * b[b_index];
+                        // Ensure indices are within bounds
+                        if a_index >= a.len() || b_index >= b.len() {
+                            panic!("Index out of bounds: a_index = {}, b_index = {}", a_index, b_index);
+                        }
+
+                        // Debug prints for indices and values
+                        println!("a[{}]: {:?}, b[{}]: {:?}", a_index, a[a_index], b_index, b[b_index]);
+
+                        // Accumulate the product into sum
+                        sum = sum + (*alpha) * a[a_index] * b[b_index];
+                    }
+
+                    let c_index = i * ldc + j; // Row-major indexing for C[i, j]
+
+                    // Debug prints for C update
+                    println!("c[{}] before: {:?}, sum: {:?}", c_index, c[c_index], sum);
+
+                    // Update matrix C
+                    c[c_index] = (*beta) * c[c_index] + sum;
+
+                    // Debug prints for C after update
+                    println!("c[{}] after: {:?}", c_index, c[c_index]);
+                }
             }
+        }
+        Layout::ColumnMajor => {
+            // Determine dimensions of matrices A, B, and C for column-major layout
+            let m = lda;
+            let k_a = a.len() / lda;
+            let k_b = ldb;
+            let n = b.len() / ldb;
+            let m_c = ldc;
+            let n_c = c.len() / ldc;
 
-            // Determine the index for `c` and update the value
-            let c_index = match layout {
-                Layout::RowMajor => i * ldc + j,
-                Layout::ColumnMajor => j * ldc + i,
-            };
+            // Debug prints for dimensions
+            println!("m: {}, k_a: {}, k_b: {}, n: {}, m_c: {}, n_c: {}", m, k_a, k_b, n, m_c, n_c);
 
-            // Check that the index is within bounds before updating
-            assert!(
-                c_index < c.len(),
-                "Index out of bounds for matrix C: {} >= {}",
-                c_index,
-                c.len()
-            );
+            // Ensure dimensions match for matrix multiplication
+            assert!(k_a == k_b, "Inner dimensions of A and B must match.");
+            assert!(m == m_c, "Row dimensions of A and C must match.");
+            assert!(n == n_c, "Column dimensions of B and C must match.");
 
-            // Update the result matrix `c`
-            c[c_index] = (*beta) * c[c_index] + sum;
+            for i in 0..m {
+                for j in 0..n {
+                    let mut sum = T::zero();
+                    for l in 0..k_a {
+                        let a_index = l * lda + i; // Access A[l, i] in column-major
+                        let b_index = j * ldb + l; // Access B[j, l] in column-major
+
+                        // Ensure indices are within bounds
+                        if a_index >= a.len() || b_index >= b.len() {
+                            panic!("Index out of bounds: a_index = {}, b_index = {}", a_index, b_index);
+                        }
+
+                        // Debug prints for indices and values
+                        println!("a[{}]: {:?}, b[{}]: {:?}", a_index, a[a_index], b_index, b[b_index]);
+
+                        // Accumulate the product into sum
+                        sum = sum + (*alpha) * a[a_index] * b[b_index];
+                    }
+
+                    let c_index = j * ldc + i; // Column-major indexing for C[j, i]
+
+                    // Debug prints for C update
+                    println!("c[{}] before: {:?}, sum: {:?}", c_index, c[c_index], sum);
+
+                    // Update matrix C
+                    c[c_index] = (*beta) * c[c_index] + sum;
+
+                    // Debug prints for C after update
+                    println!("c[{}] after: {:?}", c_index, c[c_index]);
+                }
+            }
         }
     }
 }
