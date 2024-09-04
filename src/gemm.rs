@@ -1,81 +1,123 @@
-use std::ops::{Add, AddAssign, Mul, MulAssign};
+use std::ops::{Add, AddAssign, Mul, MulAssign, Neg};
 use num_traits::{One, Zero};
 use crate::shared::{Layout, Op};
+use crate::utils::transform_matrix;
 
-
-/// ``gemm`` computes a scalar-matrix-matrix product and adds the result to a scalar-matrix product.
+/// `gemm` computes a scalar-matrix-matrix product and adds the result to a scalar-matrix product.
 ///
 /// This operation is defined as:
 ///
-///    ``C <- α * op(A) * op(B) + β * C``
+/// `C <- α * op(A) * op(B) + β * C`
 ///
 /// Where:
 ///
-/// * ``op`` is one of noop, transpose or hermitian.
-/// * ``A``, ``B``, ``C`` are matrices
-/// * ``α``, ``β`` are scalars
-/// * ``ldx`` is the leading dimension of matrix ``x``.
+/// * `op` is one of noop, transpose, or hermitian.
+/// * `A`, `B`, `C` are matrices.
+/// * `α`, `β` are scalars.
+/// * `ldx` is the leading dimension of matrix `x`.
 #[allow(clippy::min_ident_chars)]
 #[allow(clippy::too_many_arguments)]
-pub fn gemm<'a, T>(layout: &Layout, op_a: &Op, op_b: &Op, alpha: &'a T, a: &'a [T], lda: usize, b: &'a [T], ldb: usize, beta: &T, c: &mut [T], ldc: usize)
-    where
-        T: Mul<Output=T> + MulAssign + Add<Output=T> + AddAssign + 'a + Zero + One + PartialEq + Copy,
-        &'a T: Mul<Output=T> + Add<Output=T>,
+pub fn gemm<T>(
+    layout: &Layout,
+    op_a: &Op,
+    op_b: &Op,
+    alpha: &T,
+    a: &[T],
+    lda: usize,
+    b: &[T],
+    ldb: usize,
+    beta: &T,
+    c: &mut [T],
+    ldc: usize,
+) where
+    T: Mul<Output = T>
+        + MulAssign
+        + Add<Output = T>
+        + AddAssign
+        + Copy
+        + Neg<Output = T>
+        + Zero
+        + One
+        + PartialEq
+        + Default,
 {
-    match layout {
-        Layout::ColumnMajor => {}
-        Layout::RowMajor => { unimplemented!() }
-    }
-
     if a.is_empty() || b.is_empty() || c.is_empty() {
         // Early return, we can do no work here.
         return;
     }
 
     // Early return, alpha == zero => we can avoid the matrix multiply step
-    if T::is_zero(alpha) {
-        if T::is_zero(beta) {
-            for ci in c {
+    if alpha.is_zero() {
+        if beta.is_zero() {
+            for ci in c.iter_mut() {
                 *ci = T::zero();
             }
-        } else if T::is_one(beta) {
-            for ci in c {
+        } else if beta.is_one() {
+            // No need to multiply by one, just continue
+        } else {
+            for ci in c.iter_mut() {
                 *ci *= *beta;
             }
         }
         return;
     }
 
-    match (op_a, op_b) {
-        (Op::NoOp, Op::NoOp) => { gemm_noop_noop(alpha, a, lda, b, ldb, beta, c, ldc) }
-        (Op::NoOp, Op::Transpose) => { unimplemented!() }
-        (Op::NoOp, Op::Hermitian) => { unimplemented!() }
-        (Op::Transpose, Op::NoOp) => { unimplemented!() }
-        (Op::Transpose, Op::Transpose) => { unimplemented!() }
-        (Op::Transpose, Op::Hermitian) => { unimplemented!() }
-        (Op::Hermitian, Op::NoOp) => { unimplemented!() }
-        (Op::Hermitian, Op::Transpose) => { unimplemented!() }
-        (Op::Hermitian, Op::Hermitian) => { unimplemented!() }
-    }
+    // Transform matrices based on layout and operations
+    let a_t: Vec<T> = transform_matrix(layout, a, op_a, lda);
+    let b_t: Vec<T> = transform_matrix(layout, b, op_b, ldb);
+
+    // Pass slices of the vectors to gemm_calc
+    gemm_calc(layout, alpha, &a_t, lda, &b_t, ldb, beta, c, ldc);
 }
 
-#[allow(clippy::min_ident_chars)]
-#[allow(clippy::too_many_arguments)]
-fn gemm_noop_noop<'a, T>(alpha: &'a T, a: &'a [T], lda: usize, b: &'a [T], ldb: usize, beta: &T, c: &mut [T], ldc: usize)
-    where
-        T: Mul<Output=T> + MulAssign + Add<Output=T> + AddAssign + Copy,
-        &'a T: Mul<Output=T> + Add<Output=T>,
+fn gemm_calc<T>(
+    layout: &Layout,
+    alpha: &T,
+    a: &[T],
+    lda: usize,
+    b: &[T],
+    ldb: usize,
+    beta: &T,
+    c: &mut [T],
+    ldc: usize,
+) where
+    T: Mul<Output = T> + Add<Output = T> + Copy + Zero + One + PartialEq,
 {
-    for ci in &mut *c {
-        *ci *= *beta;
-    }
+    // Determine dimensions based on layout
+    let (m, n, k) = match layout {
+        Layout::RowMajor => (c.len() / ldc, b.len() / ldb, a.len() / lda),
+        Layout::ColumnMajor => (ldc, ldb, lda),
+    };
 
-    for (cj, bk) in c.chunks_exact_mut(ldc).zip(b.chunks_exact(ldb)) {
-        for (bkj, ai) in bk.iter().zip(a.chunks_exact(lda)) {
-            let alpha_bkj = alpha * bkj;
-            for (cij, aik) in cj.iter_mut().zip(ai.iter()) {
-                *cij += *aik * alpha_bkj;
+    // Iterate through the matrix dimensions
+    for i in 0..m {
+        for j in 0..n {
+            let mut sum = T::zero();
+            for l in 0..k {
+                // Use match to handle indexing based on the layout
+                let (a_index, b_index) = match layout {
+                    Layout::RowMajor => (
+                        i * lda + l,       // Row-major indexing for `a`
+                        l * ldb + j,       // Row-major indexing for `b`
+                    ),
+                    Layout::ColumnMajor => (
+                        l * lda + i,       // Column-major indexing for `a`
+                        j * ldb + l,       // Column-major indexing for `b`
+                    ),
+                };
+
+                // Dereference alpha, a, and b to use the values in operations
+                sum = sum + (*alpha) * a[a_index] * b[b_index];
             }
+
+            // Determine the index for `c` and update the value
+            let c_index = match layout {
+                Layout::RowMajor => i * ldc + j,
+                Layout::ColumnMajor => j * ldc + i,
+            };
+
+            // Update the result matrix `c`, dereferencing beta
+            c[c_index] = (*beta) * c[c_index] + sum;
         }
     }
 }

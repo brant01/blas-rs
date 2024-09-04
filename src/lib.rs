@@ -1,5 +1,7 @@
-pub mod shared;
+
 pub mod gemm;
+pub mod shared;
+pub mod utils;
 
 use num_traits::{One, Zero};
 use std::ops::{Add, AddAssign, Mul, MulAssign};
